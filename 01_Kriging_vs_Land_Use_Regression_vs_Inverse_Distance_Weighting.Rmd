@@ -1,0 +1,238 @@
+---
+title: Comparing Kriging, Land Use Regression (LUR), and Inverse Distance Weighting
+  (IDW)
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+The example below analyzes the soil calcium levels in a geograhic dataset. This code will cover Ordinary Kriging (OK) and Universal Kriging (UK), IDW, and LUR. for our LUR regresison model we will use the Ordinary Least Squares (OLS) method to generate our coefficients. For our UK model, we will use both Weighted Least Squares (WLS) and Maximum Likelihood Estimation (MLE) for the linear regression portion of the model.
+
+### R Packages
+
+This is a list of R packages we will be using for this analysis:
+
+```{r cars}
+library(geoR) # Geostatistical analysis package
+library(splancs) # Displays spatial data
+library(maps) # Displays maps
+library(gstat) # Variogram modelling and kriging
+library(lattice) # Multi-pane graphing package to display relationships between variables
+library(ggplot2) # Graphing package
+```
+
+### Loading Soil Calcium Data
+
+```{r}
+data(ca20)
+names(ca20)
+```
+
+The 'ca20' dataset is of class 'geodata'. This is a custom class. It turns out that the geodata class is simply a list containing 5 named elements (references using the dollad, '$' sign): 1) a matrix of coordinates, 2) a vector of integers representing the measurements taken at each coordinate (repesenting calcium levels, in this instance), 3) a dataframe containing the covariate data for each coordinate (in this instance, altitude and area), 4) a dataframe containing data needed to draw the relevant borders for this data, 5) a placeholder for other data.
+
+```{r}
+class(ca20)
+class(ca20$coords)
+head(ca20$coords)
+class(ca20$data)
+head(ca20$data)
+class(ca20$covariate)
+head(ca20$covariate)
+class(ca20$borders)
+head(ca20$borders)
+class(ca20$other)
+head(ca20$other)
+```
+
+### Exploratory Data Analysis
+
+The 'plot()' function is from the 'sp' package which is a prereqisite package for geoR. 'sp' conains classess and methods for spatial data.
+The top right plot appears to show that as you go further south ('Y Coord'), soil calcium levels appear to increase. How far north a data point is would be an interesting covariate to add to our LUR model. On the other hand, the bottom left plot seems to show no trend as you move east to west.
+
+```{r}
+plot(ca20, borders=ca20$borders)
+```
+
+### Plotting Initial Semivariogram to Assess Spatial Dependence
+
+To plot our semivariogram we use the variog() function from geoR. By default it will take the coords and data from our geodata object and return a binned variogram (as opposed to a variogram cloud, or a smoothed variogram). In the example below, we are specifying the maximum distance for our variogram. https://www.rdocumentation.org/packages/geoR/versions/1.7-5.2.1/topics/variog. Semivariaograms, and therefore, Kriging, measure 'small scale' variation, i.e. the influence of the immediate surroundings of the data point.
+
+The semivariogram below shows that there does indeed appear to be a spatial dependence for soil calcium levels.
+
+```{r}
+plot(variog(ca20,max.dist = 1138/2),pch=16)
+```
+
+### Exploring Large-Scale Spatial Relationships (and Ignoring the Small-Scale Spatial Effect)
+
+There may be environmental covariates that explain the variation in soil calcium levels. In this example we will see whether there is a relationship between how far north a data point is and soil calcium level. We will also see whether there is a relationshep between altitude and soil calcium levels.
+The output below appears to show the expected relationship between north and soil calcium levels - as you go further south, calcium decreases (negative correlation only exists when one is increasing while the other is decreasing). Regarding altitude and calcoium levels, it appears that as altitude increases, soild calcium levels increase too. 
+
+Looking at the relationship between calcium and altitude, it appears that higher altitude increases as you go south. This would indicate the altitude and north are correlated. This may mean that north and altitude have less 'explanatory power' than these numbers would suggest. In other words, because of the relationship between the two environmental covariates, less of the vaariation of the outcome may be explained than we would expect if there was not relationship between the two covariates.
+
+It is worth noting that the matrix belwo only shows the degree of correlation, not whether the underlying relationship is statistically significant.
+
+```{r}
+# Let's begin by creating a dataframe out outome (soil calcium levels), and covariates (North, and altitude) to feed into our linear regression function.
+
+CAdata = data.frame(calcium = ca20$data,
+                    altitude = as.vector(ca20$covariate$altitude),
+                    north = as.vector(ca20$coords[,2]))
+
+cor(CAdata)
+```
+
+To assess the statistical significance of the covariates on the outcome, let's feed our dataframe into a few linear regression models.
+
+```{r}
+lm1<-lm(calcium~north,data=CAdata) 
+summary(lm1)
+
+lm2<-lm(calcium~altitude,data=CAdata) 
+summary(lm2)
+
+lm3<-lm(calcium~north+altitude,data=CAdata) 
+summary(lm3)
+
+```
+
+### Comparing the Small-Scale Spatial Effect Before and After Accounting for Large Scale Spatial Effects
+
+Below we compare our initial semivariogram with the residual semivariogram after accounting for large scale spatial effects using the linear regression model (aka Land Use Regression (LUR)).
+
+```{r}
+# Plot the original semivariogram (vario_ok = semivariogram that is used for Ordinary Kriging)
+vario_ok = variog(ca20,max.dist=1138/2) 
+plot(vario_ok,pch=16)
+
+#Plot the semivariogram after accounting for the two environmental covariates used in the regression model
+# grab the residuals for each data point
+resid = lm1$residuals   
+geo_lm = as.geodata(cbind(ca20$coords,resid)) # ca20$coords is written to geo_lm$coords, resid is writtent to geo_lm$data (this is the residual soil calcium level variation that was NOT accounted for by the linear model. We want to see how much of the variation in residual variation in soild calcium levels is exaplined by small scale spatial effects).
+vario_lm <-variog(geo_lm,max.dist=1138/2)  
+plot(vario_lm,pch=16) 
+title("Residual Semivariogram for Linear Model 1")
+geo_lm
+```
+
+### Ordinary Kriging: Finding the line of best fit (WLS and MLE)
+
+The first step for any Kriging model is to take the semivarigram and create a function, or 'line of best fit' for it.
+In order to do this we need to need to select the method for fitting we want to use. Apart from the standard OLS (Ordinary Least Squares) method of finding the line of best fit, there is MLE (Maximum Likelihood Estimation) and WLS (Weighted Least Squares).
+
+```{r}
+# Let's start by splotting the scatterplot of our semivariogram
+vario_ok = variog(ca20, max.dist = 1138/2)
+plot(vario_ok, pch = 16)
+
+# Let's find and plot the WLS line of best fit for the semivariogram
+oklineofbestfitWLS = variofit(vario_ok, ini.cov.pars = c(150,200), nugget = 30, weights = "cressie") ## The parameter 'ini.cov.pars' takes a vector with the 'partial sill' and 'range' - Weights is 'cressie' is simply the way we are calculating our weighted lesast square estimate 
+lines(oklineofbestfitWLS, lwd = 2, lty = 3)
+
+# Let's do the same again but using MLE. likfit() is just variofit() but for MLE. MLE needs a different function because it uses different input data. Where WLS uses the points on the smivariogram (which are aggrates data points by distance bin). MLE uses the the original, unaggrefated data (data in ca20$data) to calculate variances used in the MLE calculation.
+oklineofbestfitMLE = likfit(ca20, ini.cov.pars = c(170.02, 451.79), nugget = 33.12)
+lines(oklineofbestfitMLE, lwd = 2, lty = 1)
+
+# Add legend and title. Solid line is MLE. Dashed line is WLS
+title("WLS vs. MLE - Ordinary Kriging Line of Best Fit")
+```
+
+### Universal Kriging: Finding the line of best fit (MLE only)
+
+As mentioned previously, in order to create the function to predict our outcome, we must first find out the function that best fits the semivariogram. In this case we need to find the function for the residul semivariogram after accounting for large-scale spatial variation using a linear regression model (aka land use regression model (LUR)).
+
+```{r}
+# Our first step is building the geodata object we want to use. The geodata object will be identical to the original 'ca20' geodata object apart from the covariates property, we want to keep altitude, remove area, and add the north portion of our coordinates
+newCovariates = data.frame(north=as.vector(ca20$coords[,2]), altitude = as.vector(ca20$covariate$altitude))
+newGeoDataObj = as.geodata(cbind(ca20$coords, ca20$data, newCovariates), covar.col = 4:5) # covar.coljust tells the function that our covariates are in columns 4 and 5
+
+# Now we can fit our Universal Kriging Model using MLE (note MLE will be used on the residuals not the original data)
+# Universal kriging (UK) is aslo known as 'kriging with a trend' (KT). The trend parameter in likfit() takes 
+uklineofbestfitMLE = likfit(newGeoDataObj, ini.cov.pars = c(50,100), nugget = 30, trend = trend.spatial(~north,newGeoDataObj), lik.method="ML") # we are ignoring the altitude covariate for convenience 
+
+uklineofbestfitMLE$beta
+```
+
+
+
+Now let's see how well our uklineofbestfit line fits the residual semivariogram:
+```{r}
+
+vario_lm <-variog(geo_lm,max.dist=1138/2)  
+plot(vario_lm,pch=16) 
+lines(uklineofbestfitMLE,lwd=2,lty=1)
+title("Residual Semivariogram for Linear Model with UK Line of Best Fit")
+
+```
+
+
+### Creating the points at which we want a prediction
+
+Let's take a look at our data samples
+
+```{r}
+# plot the calcium soil sample locations
+points(ca20,pt.divide="equal",borders=ca20$borders,col=4)
+apply(ca20$coords,2,range)  
+
+
+```
+
+But the data above is our training data. we need a bunch of locations to predict at.
+Let's create a dataframe of locations we want to predict at.
+
+```{r}
+# create a prediction grid
+grid<-expand.grid(east=seq(4850,6050,length=75),
+                  north=seq(4750,5850,length=75))
+
+head(grid)
+
+```
+
+
+Let's us the 'splancs' package pip() function to subset these predictions by the borders of the dataset.
+These are the locations we are going to predict at:
+
+```{r}
+# Subset the prediction grid, and plot the sample locations and the prediction grid in one plot 
+grid2<-pip(grid,ca20$borders) # Pip is a finct
+names(grid2)<-c("x","y")
+grid3<- as.data.frame(grid2)
+head(grid3)
+
+```
+
+
+### Predicting using our Universal Kriging Model
+
+```{r}
+# create a grid that adds north as a covariate
+grid2X<-as.geodata(cbind(grid3,1,grid3[,2]),covar.col=4)# Note our geodata object has no 'data' property. That's because we want to predict our new data values, given a set of coordinate (coord) locations we want to find predictions at.
+names(grid2X$covariate)<-"north"
+
+univKrigPreds<-krige.conv(newGeoDataObj,locations=grid2,borders=newGeoDataObj$borders,
+                         krige=krige.control(obj.model=uklineofbestfitMLE,
+                                             trend.d=trend.spatial(~north,newGeoDataObj),
+                                             trend.l=trend.spatial(~north,grid2X)))
+class(univKrigPreds)
+
+# SHow the first few predictions
+head(univKrigPreds$predict)
+```
+Let's see these predictions mapped:
+
+```{r}
+sample_coords<- as.data.frame(ca20$coords)
+sample_border<- as.data.frame(ca20$borders)
+# visualize the krige.uk.mle kriging
+ggplot(grid3, aes(x=x, y=y)) + geom_tile(aes(fill=univKrigPreds$predict)) + 
+  coord_equal() +
+  scale_fill_gradient(low = "red", high="yellow") +
+  geom_point(data = sample_coords, aes(x = east, y = north)) +
+  geom_polygon(data = sample_border, aes(x = east, y = north), fill = NA, colour = 'black') +
+  ggtitle('Universal Kriged Predictions: MLE Approach')
+```
